@@ -22,6 +22,7 @@ import java.lang.Thread.UncaughtExceptionHandler
 import java.lang.management.ManagementFactory
 import java.net.{URI, URL}
 import java.nio.ByteBuffer
+import java.security.PrivilegedExceptionAction
 import java.util.Properties
 import java.util.concurrent._
 import javax.annotation.concurrent.GuardedBy
@@ -31,6 +32,7 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, Map}
 import scala.util.control.NonFatal
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder
+import org.apache.hadoop.security.UserGroupInformation
 
 import org.apache.spark._
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -310,6 +312,23 @@ private[spark] class Executor(
     }
 
     override def run(): Unit = {
+      val proxyUser = taskDescription.properties.getProperty("spark.task.proxy.user", "")
+      val principal = env.conf.get("spark.task.principal", "")
+      val keytab = env.conf.get("spark.task.keytab", "")
+      if (proxyUser.nonEmpty && principal.nonEmpty && keytab.nonEmpty) {
+        val ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab)
+        logInfo(s"real user: $ugi")
+        val proxyUgi = UserGroupInformation.createProxyUser(proxyUser, ugi)
+        logInfo(s"proxy user: $proxyUgi")
+        proxyUgi.doAs(new PrivilegedExceptionAction[Unit]() {
+          override def run(): Unit = doRun()
+        })
+      } else {
+        doRun()
+      }
+    }
+
+    private def doRun(): Unit = {
       threadId = Thread.currentThread.getId
       Thread.currentThread.setName(threadName)
       val threadMXBean = ManagementFactory.getThreadMXBean

@@ -28,6 +28,7 @@ import scala.util.control.NonFatal
 
 import org.apache.hadoop.hive.metastore.api.FieldSchema
 import org.apache.hadoop.hive.shims.Utils
+import org.apache.hadoop.security.UserGroupInformation
 import org.apache.hive.service.cli._
 import org.apache.hive.service.cli.operation.ExecuteStatementOperation
 import org.apache.hive.service.cli.session.HiveSession
@@ -210,6 +211,8 @@ private[hive] class SparkExecuteStatementOperation(
   }
 
   private def execute(): Unit = {
+    sqlContext.sparkContext.setLocalProperty("spark.task.proxy.user",
+      UserGroupInformation.getCurrentUser.getUserName)
     statementId = UUID.randomUUID().toString
     logInfo(s"Running query '$statement' with $statementId")
     setState(OperationState.RUNNING)
