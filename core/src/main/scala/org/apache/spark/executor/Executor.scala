@@ -73,6 +73,16 @@ private[spark] class Executor(
 
   private val conf = env.conf
 
+  private val ugi = {
+    val principal = conf.get("spark.task.principal", "")
+    val keytab = conf.get("spark.task.keytab", "")
+    if (principal.nonEmpty && keytab.nonEmpty) {
+      UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab)
+    } else {
+      null
+    }
+  }
+
   // No ip or host:port - just hostname
   Utils.checkHost(executorHostname)
   // must not have port specified.
@@ -313,11 +323,7 @@ private[spark] class Executor(
 
     override def run(): Unit = {
       val proxyUser = taskDescription.properties.getProperty("spark.task.proxy.user", "")
-      val principal = env.conf.get("spark.task.principal", "")
-      val keytab = env.conf.get("spark.task.keytab", "")
-      if (proxyUser.nonEmpty && principal.nonEmpty && keytab.nonEmpty) {
-        val ugi = UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab)
-        logInfo(s"real user: $ugi")
+      if (proxyUser.nonEmpty && ugi != null) {
         val proxyUgi = UserGroupInformation.createProxyUser(proxyUser, ugi)
         logInfo(s"proxy user: $proxyUgi")
         proxyUgi.doAs(new PrivilegedExceptionAction[Unit]() {
