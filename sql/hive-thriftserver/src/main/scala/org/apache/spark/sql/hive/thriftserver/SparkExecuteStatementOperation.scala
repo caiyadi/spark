@@ -26,6 +26,7 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 import scala.util.control.NonFatal
 
+import org.apache.commons.codec.binary.Base64
 import org.apache.hadoop.hive.metastore.api.FieldSchema
 import org.apache.hadoop.hive.shims.Utils
 import org.apache.hadoop.security.UserGroupInformation
@@ -33,6 +34,8 @@ import org.apache.hive.service.cli._
 import org.apache.hive.service.cli.operation.ExecuteStatementOperation
 import org.apache.hive.service.cli.session.HiveSession
 
+import org.apache.spark.deploy.SparkHadoopUtil
+import org.apache.spark.deploy.security.HadoopDelegationTokenManager
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{DataFrame, Row => SparkRow, SQLContext}
 import org.apache.spark.sql.execution.command.SetCommand
@@ -173,6 +176,7 @@ private[hive] class SparkExecuteStatementOperation(
             override def run(): Unit = {
               registerCurrentOperationLog()
               try {
+                setDelegationToken()
                 execute()
               } catch {
                 case e: HiveSQLException =>
@@ -210,9 +214,26 @@ private[hive] class SparkExecuteStatementOperation(
     }
   }
 
+  private def setDelegationToken(): Unit = {
+    val currentUser = UserGroupInformation.getCurrentUser
+    if (SparkHadoopUtil.get.isProxyUser(currentUser)) {
+      sqlContext.sparkContext.setLocalProperty(
+        "spark.task.user.name",
+        currentUser.getShortUserName)
+      val sparkConf = sqlContext.sparkContext.getConf
+      val hadoopConf = sqlContext.sparkContext.hadoopConfiguration
+      val creds = currentUser.getCredentials
+      val hdpDTManager = new HadoopDelegationTokenManager(sparkConf, hadoopConf)
+      hdpDTManager.obtainDelegationTokens(hadoopConf, creds)
+      currentUser.addCredentials(creds)
+      val credBytes = SparkHadoopUtil.get.serialize(creds)
+      sqlContext.sparkContext.setLocalProperty(
+        "spark.task.user.credentials",
+        Base64.encodeBase64String(credBytes))
+    }
+  }
+
   private def execute(): Unit = {
-    sqlContext.sparkContext.setLocalProperty("spark.task.proxy.user",
-      UserGroupInformation.getCurrentUser.getUserName)
     statementId = UUID.randomUUID().toString
     logInfo(s"Running query '$statement' with $statementId")
     setState(OperationState.RUNNING)

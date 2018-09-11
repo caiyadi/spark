@@ -32,6 +32,7 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, Map}
 import scala.util.control.NonFatal
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder
+import org.apache.commons.codec.binary.Base64
 import org.apache.hadoop.security.UserGroupInformation
 
 import org.apache.spark._
@@ -72,16 +73,6 @@ private[spark] class Executor(
   private val EMPTY_BYTE_BUFFER = ByteBuffer.wrap(new Array[Byte](0))
 
   private val conf = env.conf
-
-  private val ugi = {
-    val principal = conf.get("spark.task.principal", "")
-    val keytab = conf.get("spark.task.keytab", "")
-    if (principal.nonEmpty && keytab.nonEmpty) {
-      UserGroupInformation.loginUserFromKeytabAndReturnUGI(principal, keytab)
-    } else {
-      null
-    }
-  }
 
   // No ip or host:port - just hostname
   Utils.checkHost(executorHostname)
@@ -322,11 +313,12 @@ private[spark] class Executor(
     }
 
     override def run(): Unit = {
-      val proxyUser = taskDescription.properties.getProperty("spark.task.proxy.user", "")
-      if (proxyUser.nonEmpty && ugi != null) {
-        val proxyUgi = UserGroupInformation.createProxyUser(proxyUser, ugi)
-        logInfo(s"proxy user: $proxyUgi")
-        proxyUgi.doAs(new PrivilegedExceptionAction[Unit]() {
+      val user = taskDescription.properties.getProperty("spark.task.user.name", "")
+      val creds = taskDescription.properties.getProperty("spark.task.user.credentials", "")
+      if (user.nonEmpty && creds.nonEmpty) {
+        val ugi = UserGroupInformation.createRemoteUser(user)
+        ugi.addCredentials(SparkHadoopUtil.get.deserialize(Base64.decodeBase64(creds)))
+        ugi.doAs(new PrivilegedExceptionAction[Unit]() {
           override def run(): Unit = doRun()
         })
       } else {
